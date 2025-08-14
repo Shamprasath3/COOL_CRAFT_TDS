@@ -1,7 +1,6 @@
 # COOL_CRAFT_WEBAPP.py
 import streamlit as st
 import pandas as pd
-import os
 import io
 import re
 from math import ceil
@@ -24,38 +23,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.markdown('<div class="header">❄️ CoolCraft TDS – HVAC Technical Data Sheet Generator</div>', unsafe_allow_html=True)
 
-# ================ DATA SOURCES ================
-DATA_SOURCES = {
-    ("Toshiba", "VRF", "Other", "Outdoor Unit", "Single Unit"): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\TOS_VRF_SINGLE.xlsx",
-    ("Toshiba", "VRF", "Other", "Outdoor Unit", "High Efficiency"): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\TOS_VRF_HI_EFM.xlsx",
-    ("Toshiba", "VRF", "Other", "Outdoor Unit", "Combination"): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\TOS_VRF_COMB.xlsx",
-    ("Toshiba", "VRF", "Cassette", "Indoor Unit", None): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\4-way Cassette U series.xlsx",
-    ("Toshiba", "VRF", "High Wall", "Indoor Unit", None): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\Highwall_USeries.xlsx",
-    ("Toshiba", "VRF", "Ductable", "Indoor Unit", None): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\HS Ductable TDS.xlsx",
-}
-
 # Conversion constants
 KW_TO_HP = 1.0 / 0.745699872
 TON_TO_HP = 3.517 / 0.745699872
 
 # ================ HELPERS ================
 @st.cache_data(ttl=600)
-def load_excel_all_sheets(path: str):
-    if os.path.exists(path):
-        xls = pd.ExcelFile(path)
-    else:
-        fallback = os.path.join("/mnt/data", os.path.basename(path))
-        if os.path.exists(fallback):
-            xls = pd.ExcelFile(fallback)
-        else:
-            raise FileNotFoundError(f"File not found: {path}")
-    return {sheet: pd.read_excel(xls, sheet_name=sheet) for sheet in xls.sheet_names}
+def load_excel_all_sheets(uploaded_file):
+    return pd.read_excel(uploaded_file, sheet_name=None)
 
 def normalize_name(s: str) -> str:
     if s is None:
         return ""
-    s = str(s)
-    s = s.strip().lower()
+    s = str(s).strip().lower()
     s = re.sub(r'\s+', ' ', s)
     s = s.replace('\u200b', '')
     return s
@@ -67,24 +47,18 @@ def find_capacity_column_by_type(df: pd.DataFrame, unit_type: str) -> str:
     norm_map = build_normalized_map(df)
     if unit_type.lower() == "indoor":
         for orig, norm in norm_map.items():
-            if "cooling capacity" in norm and "kw" in norm:
-                return orig
+            if "cooling capacity" in norm and "kw" in norm: return orig
         for orig, norm in norm_map.items():
-            if "capacity" in norm and "kw" in norm:
-                return orig
+            if "capacity" in norm and "kw" in norm: return orig
         for orig, norm in norm_map.items():
-            if "kw" in norm:
-                return orig
+            if "kw" in norm: return orig
     else:
         for orig, norm in norm_map.items():
-            if "hp" in norm and ("capacity" in norm or "hp" in norm):
-                return orig
+            if "hp" in norm and ("capacity" in norm or "hp" in norm): return orig
         for orig, norm in norm_map.items():
-            if "horsepower" in norm or re.search(r'\bhp\b', norm):
-                return orig
+            if "horsepower" in norm or re.search(r'\bhp\b', norm): return orig
         for orig, norm in norm_map.items():
-            if "capacity" in norm and ("hp" in norm or "horsepower" in norm):
-                return orig
+            if "capacity" in norm and ("hp" in norm or "horsepower" in norm): return orig
     return None
 
 def expand_combo_instances(combo):
@@ -107,7 +81,11 @@ def greedy_combo(target_cap, sizes):
     return combo
 
 def generate_candidate_combos(target_cap, sizes, max_suggestions=12):
-    raw = [greedy_combo(target_cap, sizes)]
+    # enhanced algorithm: try exact match first
+    exact_match = {s: int(target_cap // s) for s in sizes if target_cap % s == 0 and target_cap // s > 0}
+    raw = []
+    if exact_match: raw.append(exact_match)
+    raw.append(greedy_combo(target_cap, sizes))
     for s in sizes[:6]:
         raw.append({s: ceil(target_cap / s)})
     uniq = {tuple(sorted(c.items(), reverse=True)): c for c in raw}
@@ -123,39 +101,10 @@ def generate_candidate_combos(target_cap, sizes, max_suggestions=12):
     scored.sort(key=lambda x: x[0], reverse=True)
     return [c for _, c in scored]
 
-def find_best_combinations_optimized(target_cap, sizes, max_suggestions=12):
-    """
-    Generate combos sorted: exact match first, then nearest higher, then nearest lower.
-    """
-    exact_matches = []
-    higher = []
-    lower = []
-    for combo in generate_candidate_combos(target_cap, sizes, max_suggestions*2):
-        total = sum(expand_combo_instances(combo))
-        if abs(total - target_cap) < 1e-6:
-            exact_matches.append(combo)
-        elif total > target_cap:
-            higher.append(combo)
-        else:
-            lower.append(combo)
-    ordered = exact_matches + higher + lower
-    return ordered[:max_suggestions]
-
 def find_nearest_row(df, target_val, cap_col):
     diffs = (pd.to_numeric(df[cap_col], errors='coerce') - float(target_val)).abs()
     idx = diffs.idxmin()
     return df.loc[idx] if pd.notna(idx) else None
-
-def combo_total_and_status(combo, target_cap):
-    total = sum(expand_combo_instances(combo))
-    delta = total - target_cap
-    if abs(delta) < 1e-6:
-        status = "Exact"
-    elif delta > 0:
-        status = "Higher"
-    else:
-        status = "Lower"
-    return total, delta, status
 
 def export_excel(df: pd.DataFrame, sheet_name='VRF_TDS_Report'):
     wb = Workbook()
@@ -183,12 +132,9 @@ def export_excel(df: pd.DataFrame, sheet_name='VRF_TDS_Report'):
             else:
                 fill_color = "EAF1FB" if r_idx % 2 == 0 else "FFFFFF"
                 if isinstance(value, (int, float)):
-                    if value >= 90:
-                        fill_color = "1e824c"
-                    elif value >= 70:
-                        fill_color = "f39c12"
-                    else:
-                        fill_color = "c0392b"
+                    if value >= 90: fill_color = "1e824c"
+                    elif value >= 70: fill_color = "f39c12"
+                    else: fill_color = "c0392b"
                 cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type='solid')
             cell.border = border_all
 
@@ -196,10 +142,8 @@ def export_excel(df: pd.DataFrame, sheet_name='VRF_TDS_Report'):
         length = max(len(str(cell.value or "")) for cell in col_cells)
         first_cell = next((cell for cell in col_cells if not isinstance(cell, MergedCell)), None)
         if first_cell:
-            try:
-                ws.column_dimensions[first_cell.column_letter].width = min(length + 3, 50)
-            except Exception:
-                pass
+            try: ws.column_dimensions[first_cell.column_letter].width = min(length + 3, 50)
+            except: pass
 
     bio = io.BytesIO()
     wb.save(bio)
@@ -217,174 +161,121 @@ combination_type = None
 if unit_type == "Outdoor" and product_type == "Other":
     combination_type = st.sidebar.selectbox("Outdoor selection", ["Combination", "High Efficiency", "Single Unit"])
 
-if st.sidebar.button("Proceed"):
-    st.session_state['wizard'] = {
-        'brand': brand,
-        'system_type': system_type,
-        'product_type': product_type,
-        'unit_type': unit_type,
-        'combination_mode': combination_mode,
-        'combination_type': combination_type
-    }
-
-wizard = st.session_state.get('wizard')
-if not wizard:
+uploaded_file = st.file_uploader("Upload Excel TDS", type=["xlsx"])
+if uploaded_file is None:
+    st.warning("Please upload an Excel file to proceed.")
     st.stop()
 
-# ================ LOAD DATA ================
-def map_key(w):
-    if w['unit_type'] == "Outdoor" and w['product_type'] == "Other":
-        return (w['brand'], w['system_type'], "Other", "Outdoor Unit", w.get('combination_type'))
-    else:
-        return (w['brand'], w['system_type'], w['product_type'], "Indoor Unit", None)
-
-path = DATA_SOURCES.get(map_key(wizard))
-if not path:
-    st.error("No mapping found for this selection. Check DATA_SOURCES mapping.")
-    st.stop()
-
-sheets = load_excel_all_sheets(path)
+sheets = load_excel_all_sheets(uploaded_file)
 sheet_choice = st.selectbox("Select sheet", list(sheets)) if len(sheets) > 1 else list(sheets)[0]
 df = sheets[sheet_choice].copy()
 
-if wizard['unit_type'] == "Outdoor":
-    cap_label_type = "HP"
-else:
-    cap_label_type = "kW"
-
-cap_col = find_capacity_column_by_type(df, wizard['unit_type'])
+# Detect capacity column
+cap_label_type = "HP" if unit_type=="Outdoor" else "kW"
+cap_col = find_capacity_column_by_type(df, unit_type)
 if cap_col is None:
-    st.warning(f"No capacity column ({cap_label_type}) found. Automatic combo will be disabled. Use manual mode.")
+    st.warning(f"No capacity column ({cap_label_type}) found. Automatic combo disabled.")
     sizes_available = []
 else:
     df[cap_col] = pd.to_numeric(df[cap_col], errors='coerce')
-    try:
-        sizes_available = sorted(list({float(x) for x in df[cap_col].dropna().unique()}))
-    except Exception:
-        sizes_available = []
+    sizes_available = sorted(list({float(x) for x in df[cap_col].dropna().unique()}))
 
 st.subheader("Loaded Dataset Preview")
 st.dataframe(df.head())
 
 # ================ COMBINATION GENERATION ================
-if wizard['combination_mode'] == "Automatic":
-    if cap_col is None or not sizes_available:
-        st.info("Automatic mode requires numeric capacity column. Switch to Manual mode.")
-    else:
-        unit_input = st.radio("Provide load in:", [cap_label_type, "kW" if cap_label_type=="HP" else "HP", "Ton"], horizontal=True)
-        default_value = 100.0 if cap_label_type == "HP" else 10.0
-        load_val = st.number_input(f"Enter load value ({unit_input})", min_value=0.1, value=default_value, step=0.1)
-        if st.button("Generate Combos"):
-            if cap_label_type == "HP":
-                if unit_input == "HP":
-                    target_cap = load_val
-                elif unit_input == "kW":
-                    target_cap = load_val * KW_TO_HP
-                else:
-                    target_cap = load_val * TON_TO_HP
-            else:
-                if unit_input == "kW":
-                    target_cap = load_val
-                elif unit_input == "HP":
-                    target_cap = load_val * 0.745699872
-                else:
-                    target_cap = load_val * 3.517
-            combos = find_best_combinations_optimized(target_cap, sizes_available)
-            enriched = []
-            for combo in combos:
-                rows = []
-                for idx, cap in enumerate(expand_combo_instances(combo)):
-                    exact = df[pd.to_numeric(df[cap_col], errors='coerce') == float(cap)]
-                    if not exact.empty:
-                        chosen = exact.iloc[0].to_dict()
-                    else:
-                        nearest = find_nearest_row(df, cap, cap_col)
-                        chosen = nearest.to_dict() if nearest is not None else {}
-                    chosen['_instance'] = idx + 1
-                    rows.append(chosen)
-                total_cap = sum(expand_combo_instances(combo))
-                total, delta, status = combo_total_and_status(combo, target_cap)
-                enriched.append({
-                    'combo': combo,
-                    'rows': rows,
-                    'total_cap': total_cap,
-                    'units': len(rows),
-                    'suggested_total': total,
-                    'delta': delta,
-                    'status': status
-                })
-            st.session_state['enriched'] = enriched
-else:
-    man_in = st.text_input(f"Enter {cap_label_type} sizes (use +, e.g. 3.5+3.5+2)", "")
-    if st.button("Create Combo"):
-        if not man_in.strip():
-            st.error("Enter sizes using + (e.g. 3.5+3.5+2)")
+if combination_mode == "Automatic" and sizes_available:
+    unit_input = st.radio("Provide load in:", [cap_label_type, "kW" if cap_label_type=="HP" else "HP", "Ton"], horizontal=True)
+    default_value = 100.0 if cap_label_type=="HP" else 10.0
+    load_val = st.number_input(f"Enter load value ({unit_input})", min_value=0.1, value=default_value, step=0.1)
+    if st.button("Generate Combos"):
+        # convert to target in cap units
+        if cap_label_type == "HP":
+            target_cap = load_val if unit_input=="HP" else (load_val * KW_TO_HP if unit_input=="kW" else load_val * TON_TO_HP)
         else:
-            try:
-                sizes = [float(x) for x in man_in.split("+") if x.strip()]
-            except Exception:
-                st.error("Could not parse manual sizes. Use numbers separated by +.")
-                sizes = []
-            if sizes:
-                rows = []
-                for idx, cap in enumerate(sizes):
-                    if cap_col is not None:
-                        exact = df[pd.to_numeric(df[cap_col], errors='coerce') == float(cap)]
-                        if not exact.empty:
-                            chosen = exact.iloc[0].to_dict()
-                        else:
-                            nearest_row = find_nearest_row(df, cap, cap_col)
-                            chosen = nearest_row.to_dict() if nearest_row is not None else {'_cap_input': cap}
-                    else:
-                        chosen = {'_cap_input': cap}
-                    chosen['_instance'] = idx + 1
-                    rows.append(chosen)
-                combo_dict = {}
-                for s in sizes:
-                    key = int(s) if float(s).is_integer() else s
-                    combo_dict[key] = combo_dict.get(key, 0) + 1
-                total = sum(expand_combo_instances(combo_dict))
-                delta = total - sum(sizes)
-                status = "Exact" if abs(delta) < 1e-6 else ("Higher" if delta>0 else "Lower")
-                st.session_state['enriched'] = [{
-                    'combo': combo_dict,
-                    'rows': rows,
-                    'total_cap': sum(sizes),
-                    'units': len(rows),
-                    'suggested_total': total,
-                    'delta': delta,
-                    'status': status
-                }]
+            target_cap = load_val if unit_input=="kW" else (load_val * 0.745699872 if unit_input=="HP" else load_val * 3.517)
+        enriched = []
+        sizes_desc = sorted(sizes_available, reverse=True)
+        normalized_sizes = [int(s) if float(s).is_integer() else float(s) for s in sizes_desc]
+        for combo in generate_candidate_combos(target_cap, normalized_sizes):
+            rows = []
+            for idx, cap in enumerate(expand_combo_instances(combo)):
+                exact = df[pd.to_numeric(df[cap_col], errors='coerce') == float(cap)]
+                if not exact.empty:
+                    chosen = exact.iloc[0].to_dict()
+                else:
+                    nearest = find_nearest_row(df, cap, cap_col)
+                    chosen = nearest.to_dict() if nearest is not None else {}
+                chosen['_instance'] = idx + 1
+                rows.append(chosen)
+            total_cap = sum(pd.to_numeric([r.get(cap_col, 0) for r in rows], errors='coerce'))
+            enriched.append({'combo': combo, 'rows': rows, 'total_cap': total_cap, 'units': len(rows)})
+        st.session_state['enriched'] = enriched
+else:
+    st.info("Manual combination mode or no numeric capacity column detected.")
 
 # ================ SHOW & EXPORT ================
 if 'enriched' in st.session_state:
     enriched = st.session_state['enriched']
     for i, e in enumerate(enriched, 1):
-        combo_desc = " + ".join(f"{v}×{k}{cap_label_type}" for k, v in e['combo'].items())
-        suggested = e.get('suggested_total', sum(expand_combo_instances(e['combo'])))
-        delta = e.get('delta', suggested - target_cap if 'target_cap' in locals() else 0)
-        status = e.get('status', "N/A")
-        sign = "+" if delta > 0 else ""
-        st.markdown(f"**Option {i}**: {combo_desc} — Units: {e.get('units',0)} — "
-                    f"Requested: {round(target_cap if 'target_cap' in locals() else e.get('total_cap',0),3)} {cap_label_type} • "
-                    f"Produces: {round(suggested,3)} {cap_label_type} ({status} {sign}{round(delta,3)})")
+        desc = " + ".join(f"{v}×{k}{cap_label_type}" for k, v in e['combo'].items())
+        st.markdown(f"**Option {i}**: {desc} — Units: {e.get('units',0)} — Total: {round(e.get('total_cap',0), 3)} {cap_label_type}")
         st.dataframe(pd.DataFrame(e['rows']).head(10))
 
     choice = st.selectbox("Choose option", range(1, len(enriched) + 1)) - 1
     chosen = enriched[choice]
-    out_df = pd.DataFrame(chosen['rows'])
-    suggested_total = chosen.get('suggested_total', sum(expand_combo_instances(chosen['combo'])))
-    delta = chosen.get('delta', suggested_total - (target_cap if 'target_cap' in locals() else chosen.get('total_cap',0)))
-    status = chosen.get('status', 'N/A')
 
-    st.markdown("### Production vs Requested")
-    colA, colB, colC = st.columns(3)
-    colA.metric("Requested", f"{round(target_cap if 'target_cap' in locals() else chosen.get('total_cap',0),3)} {cap_label_type}")
-    colB.metric("Will Produce", f"{round(suggested_total,3)} {cap_label_type}", delta=f"{round(delta,3)}")
-    colC.markdown(f"**Status:** {status}")
+    mod_rows = []
+    for r in chosen['rows']:
+        inst = int(r.get('_instance', 0))
+        sel_row = r.copy()
+        if 'model' in df.columns and cap_col in r and pd.notna(r.get(cap_col, None)):
+            model_list = df[pd.to_numeric(df[cap_col], errors='coerce') == float(r[cap_col])]['model'].dropna().unique().tolist()
+            if not model_list: model_list = df['model'].dropna().unique().tolist()
+            model_list = sorted(model_list)
+            sel = st.selectbox(f"Instance {inst}", model_list, key=f"ov_{inst}")
+            matches = df[df['model'] == sel]
+            if not matches.empty:
+                sel_row = matches.iloc[0].to_dict()
+                sel_row['_instance'] = inst
+        else:
+            cap_display = r.get(cap_col, r.get('_cap_input', 'N/A'))
+            st.markdown(f"Instance {inst} — {cap_label_type}: {cap_display}")
+            sel_row['_instance'] = inst
+        mod_rows.append(sel_row)
 
-    st.markdown("### TDS Preview")
-    st.dataframe(out_df.head(15))
+    out_df = pd.DataFrame(mod_rows)
 
-    excel_data = export_excel(out_df)
-    st.download_button("Download Excel TDS", excel_data, file_name=f"TDS_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    # metadata
+    client = st.text_input("Client Name", "Client")
+    manuf = st.text_input("Manufacturer", brand)
+    billing = st.text_input("Billing/Sales", "")
+    rdate = st.date_input("Report Date", datetime.now().date())
+    out_df['Client'] = client
+    out_df['Manufacturer'] = manuf
+    out_df['BillingSales'] = billing
+    out_df['ReportDate'] = rdate.strftime('%Y-%m-%d')
+    out_df['SelectedCombo'] = " + ".join(f"{v}×{k}{cap_label_type}" for k, v in chosen['combo'].items())
+    out_df[f'ComboTotal{cap_label_type}'] = chosen.get('total_cap', 0)
+    out_df['ComboUnits'] = chosen.get('units', 0)
+
+    meta_cols = ['Client', 'Manufacturer', 'BillingSales', 'ReportDate', 'SelectedCombo', f'ComboTotal{cap_label_type}', 'ComboUnits']
+    extra_cols = [c for c in df.columns if c in out_df.columns and c not in meta_cols]
+    final_cols = meta_cols + extra_cols if extra_cols else meta_cols
+    out_df = out_df[final_cols]
+
+    st.subheader("TDS Preview with Ratings")
+    num_cols = list(out_df.select_dtypes(include=['number']).columns)
+    def style_func(x):
+        if isinstance(x, (int, float)):
+            if x >= 90: return 'background-color: #1e824c; color:white'
+            elif x >= 70: return 'background-color: #f39c12; color:white'
+            else: return 'background-color: #c0392b; color:white'
+        return ''
+    st.dataframe(out_df.style.applymap(style_func, subset=num_cols) if num_cols else out_df)
+
+    if st.button("Download Excel"):
+        bytes_xl = export_excel(out_df)
+        fname = f"TDS_{client.replace(' ','_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        st.download_button("📥 Download", data=bytes_xl, file_name=fname,
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
