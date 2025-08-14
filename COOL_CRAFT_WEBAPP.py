@@ -26,12 +26,12 @@ st.markdown('<div class="header">❄️ CoolCraft TDS – HVAC Technical Data Sh
 
 # ================ DATA SOURCES ================
 DATA_SOURCES = {
-    ("Toshiba", "VRF", "Other", "Outdoor Unit", "Single Unit"): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\TOS_VRF_SINGLE.xlsx",
-    ("Toshiba", "VRF", "Other", "Outdoor Unit", "High Efficiency"): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\TOS_VRF_HI_EFM.xlsx",
-    ("Toshiba", "VRF", "Other", "Outdoor Unit", "Combination"): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\TOS_VRF_COMB.xlsx",
-    ("Toshiba", "VRF", "Cassette", "Indoor Unit", None): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\4-way Cassette U series.xlsx",
-    ("Toshiba", "VRF", "High Wall", "Indoor Unit", None): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\Highwall_USeries.xlsx",
-    ("Toshiba", "VRF", "Ductable", "Indoor Unit", None): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\HS Ductable TDS.xlsx",
+    ("Toshiba", "VRF", "Other", "Outdoor Unit", "Single Unit"): "data/TOS_VRF_SINGLE.xlsx",
+    ("Toshiba", "VRF", "Other", "Outdoor Unit", "High Efficiency"): "data/TOS_VRF_HI_EFM.xlsx",
+    ("Toshiba", "VRF", "Other", "Outdoor Unit", "Combination"): "data/TOS_VRF_COMB.xlsx",
+    ("Toshiba", "VRF", "Cassette", "Indoor Unit", None): "data/4-way Cassette U series.xlsx",
+    ("Toshiba", "VRF", "High Wall", "Indoor Unit", None): "data/Highwall_USeries.xlsx",
+    ("Toshiba", "VRF", "Ductable", "Indoor Unit", None): "data/HS Ductable TDS.xlsx",
 }
 
 KW_TO_HP = 1.0 / 0.745699872
@@ -367,3 +367,4 @@ if 'enriched' in st.session_state:
         fname = f"TDS_{client.replace(' ','_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         st.download_button("📥 Download", data=bytes_xl, file_name=fname,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
