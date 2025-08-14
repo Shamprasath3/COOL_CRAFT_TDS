@@ -41,9 +41,7 @@ TON_TO_HP = 3.517 / 0.745699872
 # ================ HELPERS ================
 @st.cache_data(ttl=600)
 def load_excel_all_sheets(path: str):
-    if isinstance(path, str) and os.path.exists(path):
-        xls = pd.ExcelFile(path)
-    elif hasattr(path, "read"):  # uploaded file
+    if os.path.exists(path):
         xls = pd.ExcelFile(path)
     else:
         raise FileNotFoundError(f"File not found: {path}")
@@ -199,7 +197,6 @@ wizard = st.session_state.get('wizard')
 if not wizard:
     st.stop()
 
-# ================ LOAD DATA ================
 def map_key(w):
     if w['unit_type'] == "Outdoor" and w['product_type'] == "Other":
         return (w['brand'], w['system_type'], "Other", "Outdoor Unit", w.get('combination_type'))
@@ -207,20 +204,37 @@ def map_key(w):
         return (w['brand'], w['system_type'], w['product_type'], "Indoor Unit", None)
 
 path = DATA_SOURCES.get(map_key(wizard))
-
-# Fallback uploader if default file missing
-if not path or not os.path.exists(path):
-    st.warning("Default Excel not found. Please upload the Excel file manually.")
-    uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-    if uploaded_file is not None:
-        path = uploaded_file
-    else:
-        st.stop()
+if not path:
+    st.error("No mapping found for this selection. Check DATA_SOURCES mapping.")
+    st.stop()
 
 sheets = load_excel_all_sheets(path)
 sheet_choice = st.selectbox("Select sheet", list(sheets)) if len(sheets) > 1 else list(sheets)[0]
 df = sheets[sheet_choice].copy()
 
-# ====================== rest of your code remains unchanged ======================
-# Your existing combination generation, selection, preview, and export logic
-# No UI/UX changes, only file loading paths modified
+# Detect capacity column
+cap_label_type = "HP" if wizard['unit_type']=="Outdoor" else "kW"
+cap_col = find_capacity_column_by_type(df, wizard['unit_type'])
+
+if cap_col is None:
+    st.warning(f"No capacity column ({cap_label_type}) found. Automatic combo disabled.")
+    sizes_available = []
+else:
+    df[cap_col] = pd.to_numeric(df[cap_col], errors='coerce')
+    sizes_available = sorted(list({float(x) for x in df[cap_col].dropna().unique()}))
+
+st.subheader("Loaded Dataset Preview")
+st.dataframe(df.head())
+
+# --- Combination Generation ---
+if wizard['combination_mode'] == "Automatic" and sizes_available:
+    target_cap = st.number_input(f"Enter Target Capacity ({cap_label_type})", min_value=1.0, value=float(sizes_available[-1]*2))
+    if st.button("Generate Combinations"):
+        combos = generate_candidate_combos(target_cap, sizes_available)
+        for idx, combo in enumerate(combos, start=1):
+            st.markdown(f"**Option {idx}:** {combo}")
+
+# --- Export Excel ---
+if st.button("Export TDS to Excel"):
+    bio = export_excel(df)
+    st.download_button("Download Excel", data=bio, file_name="CoolCraft_TDS.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
