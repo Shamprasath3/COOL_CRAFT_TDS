@@ -1,6 +1,7 @@
 # COOL_CRAFT_WEBAPP.py
 import streamlit as st
 import pandas as pd
+import os
 import io
 import re
 from math import ceil
@@ -23,14 +24,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.markdown('<div class="header">❄️ CoolCraft TDS – HVAC Technical Data Sheet Generator</div>', unsafe_allow_html=True)
 
-# Conversion constants
+# ================ DATA SOURCES ================
+DATA_SOURCES = {
+    ("Toshiba", "VRF", "Other", "Outdoor Unit", "Single Unit"): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\TOS_VRF_SINGLE.xlsx",
+    ("Toshiba", "VRF", "Other", "Outdoor Unit", "High Efficiency"): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\TOS_VRF_HI_EFM.xlsx",
+    ("Toshiba", "VRF", "Other", "Outdoor Unit", "Combination"): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\TOS_VRF_COMB.xlsx",
+    ("Toshiba", "VRF", "Cassette", "Indoor Unit", None): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\4-way Cassette U series.xlsx",
+    ("Toshiba", "VRF", "High Wall", "Indoor Unit", None): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\Highwall_USeries.xlsx",
+    ("Toshiba", "VRF", "Ductable", "Indoor Unit", None): r"C:\Users\Sham prasath K\CARRIER_DATA\TOSHIBA_DATA\TOSHIBA_MODEL_DOC\HS Ductable TDS.xlsx",
+}
+
 KW_TO_HP = 1.0 / 0.745699872
 TON_TO_HP = 3.517 / 0.745699872
 
 # ================ HELPERS ================
 @st.cache_data(ttl=600)
-def load_excel_all_sheets(uploaded_file):
-    return pd.read_excel(uploaded_file, sheet_name=None)
+def load_excel_all_sheets(path: str):
+    if os.path.exists(path):
+        return pd.read_excel(path, sheet_name=None)
+    else:
+        st.error(f"Excel file not found at {path}")
+        st.stop()
 
 def normalize_name(s: str) -> str:
     if s is None:
@@ -47,18 +61,24 @@ def find_capacity_column_by_type(df: pd.DataFrame, unit_type: str) -> str:
     norm_map = build_normalized_map(df)
     if unit_type.lower() == "indoor":
         for orig, norm in norm_map.items():
-            if "cooling capacity" in norm and "kw" in norm: return orig
+            if "cooling capacity" in norm and "kw" in norm:
+                return orig
         for orig, norm in norm_map.items():
-            if "capacity" in norm and "kw" in norm: return orig
+            if "capacity" in norm and "kw" in norm:
+                return orig
         for orig, norm in norm_map.items():
-            if "kw" in norm: return orig
-    else:
+            if "kw" in norm:
+                return orig
+    else:  # outdoor
         for orig, norm in norm_map.items():
-            if "hp" in norm and ("capacity" in norm or "hp" in norm): return orig
+            if "hp" in norm and ("capacity" in norm or "hp" in norm):
+                return orig
         for orig, norm in norm_map.items():
-            if "horsepower" in norm or re.search(r'\bhp\b', norm): return orig
+            if "horsepower" in norm or re.search(r'\bhp\b', norm):
+                return orig
         for orig, norm in norm_map.items():
-            if "capacity" in norm and ("hp" in norm or "horsepower" in norm): return orig
+            if "capacity" in norm and ("hp" in norm or "horsepower" in norm):
+                return orig
     return None
 
 def expand_combo_instances(combo):
@@ -67,10 +87,12 @@ def expand_combo_instances(combo):
         inst.extend([hp] * cnt)
     return inst
 
-def greedy_combo(target_cap, sizes):
+def greedy_combo_exact_first(target_cap, sizes):
+    if target_cap in sizes:
+        return {target_cap: 1}
     rem = int(round(target_cap))
     combo = {}
-    for s in sizes:
+    for s in sorted(sizes, reverse=True):
         cnt = rem // s
         if cnt > 0:
             combo[s] = int(cnt)
@@ -81,11 +103,7 @@ def greedy_combo(target_cap, sizes):
     return combo
 
 def generate_candidate_combos(target_cap, sizes, max_suggestions=12):
-    # enhanced algorithm: try exact match first
-    exact_match = {s: int(target_cap // s) for s in sizes if target_cap % s == 0 and target_cap // s > 0}
-    raw = []
-    if exact_match: raw.append(exact_match)
-    raw.append(greedy_combo(target_cap, sizes))
+    raw = [greedy_combo_exact_first(target_cap, sizes)]
     for s in sizes[:6]:
         raw.append({s: ceil(target_cap / s)})
     uniq = {tuple(sorted(c.items(), reverse=True)): c for c in raw}
@@ -132,9 +150,12 @@ def export_excel(df: pd.DataFrame, sheet_name='VRF_TDS_Report'):
             else:
                 fill_color = "EAF1FB" if r_idx % 2 == 0 else "FFFFFF"
                 if isinstance(value, (int, float)):
-                    if value >= 90: fill_color = "1e824c"
-                    elif value >= 70: fill_color = "f39c12"
-                    else: fill_color = "c0392b"
+                    if value >= 90:
+                        fill_color = "1e824c"
+                    elif value >= 70:
+                        fill_color = "f39c12"
+                    else:
+                        fill_color = "c0392b"
                 cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type='solid')
             cell.border = border_all
 
@@ -142,8 +163,10 @@ def export_excel(df: pd.DataFrame, sheet_name='VRF_TDS_Report'):
         length = max(len(str(cell.value or "")) for cell in col_cells)
         first_cell = next((cell for cell in col_cells if not isinstance(cell, MergedCell)), None)
         if first_cell:
-            try: ws.column_dimensions[first_cell.column_letter].width = min(length + 3, 50)
-            except: pass
+            try:
+                ws.column_dimensions[first_cell.column_letter].width = min(length + 3, 50)
+            except Exception:
+                pass
 
     bio = io.BytesIO()
     wb.save(bio)
@@ -161,18 +184,38 @@ combination_type = None
 if unit_type == "Outdoor" and product_type == "Other":
     combination_type = st.sidebar.selectbox("Outdoor selection", ["Combination", "High Efficiency", "Single Unit"])
 
-uploaded_file = st.file_uploader("Upload Excel TDS", type=["xlsx"])
-if uploaded_file is None:
-    st.warning("Please upload an Excel file to proceed.")
+if st.sidebar.button("Proceed"):
+    st.session_state['wizard'] = {
+        'brand': brand,
+        'system_type': system_type,
+        'product_type': product_type,
+        'unit_type': unit_type,
+        'combination_mode': combination_mode,
+        'combination_type': combination_type
+    }
+
+wizard = st.session_state.get('wizard')
+if not wizard:
     st.stop()
 
-sheets = load_excel_all_sheets(uploaded_file)
+# ================ LOAD DATA FROM PATH ================
+def map_key(w):
+    if w['unit_type'] == "Outdoor" and w['product_type'] == "Other":
+        return (w['brand'], w['system_type'], "Other", "Outdoor Unit", w.get('combination_type'))
+    else:
+        return (w['brand'], w['system_type'], w['product_type'], "Indoor Unit", None)
+
+path = DATA_SOURCES.get(map_key(wizard))
+if not path:
+    st.error("No mapping found for this selection. Check DATA_SOURCES mapping.")
+    st.stop()
+
+sheets = load_excel_all_sheets(path)
 sheet_choice = st.selectbox("Select sheet", list(sheets)) if len(sheets) > 1 else list(sheets)[0]
 df = sheets[sheet_choice].copy()
 
-# Detect capacity column
-cap_label_type = "HP" if unit_type=="Outdoor" else "kW"
-cap_col = find_capacity_column_by_type(df, unit_type)
+cap_label_type = "HP" if wizard['unit_type']=="Outdoor" else "kW"
+cap_col = find_capacity_column_by_type(df, wizard['unit_type'])
 if cap_col is None:
     st.warning(f"No capacity column ({cap_label_type}) found. Automatic combo disabled.")
     sizes_available = []
@@ -183,36 +226,68 @@ else:
 st.subheader("Loaded Dataset Preview")
 st.dataframe(df.head())
 
-# ================ COMBINATION GENERATION ================
-if combination_mode == "Automatic" and sizes_available:
-    unit_input = st.radio("Provide load in:", [cap_label_type, "kW" if cap_label_type=="HP" else "HP", "Ton"], horizontal=True)
-    default_value = 100.0 if cap_label_type=="HP" else 10.0
-    load_val = st.number_input(f"Enter load value ({unit_input})", min_value=0.1, value=default_value, step=0.1)
-    if st.button("Generate Combos"):
-        # convert to target in cap units
-        if cap_label_type == "HP":
-            target_cap = load_val if unit_input=="HP" else (load_val * KW_TO_HP if unit_input=="kW" else load_val * TON_TO_HP)
-        else:
-            target_cap = load_val if unit_input=="kW" else (load_val * 0.745699872 if unit_input=="HP" else load_val * 3.517)
-        enriched = []
-        sizes_desc = sorted(sizes_available, reverse=True)
-        normalized_sizes = [int(s) if float(s).is_integer() else float(s) for s in sizes_desc]
-        for combo in generate_candidate_combos(target_cap, normalized_sizes):
-            rows = []
-            for idx, cap in enumerate(expand_combo_instances(combo)):
-                exact = df[pd.to_numeric(df[cap_col], errors='coerce') == float(cap)]
-                if not exact.empty:
-                    chosen = exact.iloc[0].to_dict()
-                else:
-                    nearest = find_nearest_row(df, cap, cap_col)
-                    chosen = nearest.to_dict() if nearest is not None else {}
-                chosen['_instance'] = idx + 1
-                rows.append(chosen)
-            total_cap = sum(pd.to_numeric([r.get(cap_col, 0) for r in rows], errors='coerce'))
-            enriched.append({'combo': combo, 'rows': rows, 'total_cap': total_cap, 'units': len(rows)})
-        st.session_state['enriched'] = enriched
+# ================ COMBO GENERATION LOGIC ================
+if wizard['combination_mode'] == "Automatic":
+    if cap_col is None or not sizes_available:
+        st.info("Automatic mode requires a numeric capacity column. Switch to Manual mode or pick another sheet.")
+    else:
+        unit_input = st.radio("Provide load in:", [cap_label_type, "kW" if cap_label_type=="HP" else "HP", "Ton"], horizontal=True)
+        default_value = 100.0 if cap_label_type == "HP" else 10.0
+        load_val = st.number_input(f"Enter load value ({unit_input})", min_value=0.1, value=default_value, step=0.1)
+        if st.button("Generate Combos"):
+            if cap_label_type == "HP":
+                target_cap = load_val if unit_input=="HP" else load_val*KW_TO_HP if unit_input=="kW" else load_val*TON_TO_HP
+            else:
+                target_cap = load_val if unit_input=="kW" else load_val*0.745699872 if unit_input=="HP" else load_val*3.517
+
+            enriched = []
+            sizes_desc = sorted(sizes_available, reverse=True)
+            normalized_sizes = [int(s) if float(s).is_integer() else float(s) for s in sizes_desc]
+
+            for combo in generate_candidate_combos(target_cap, normalized_sizes):
+                rows = []
+                for idx, cap in enumerate(expand_combo_instances(combo)):
+                    exact = df[pd.to_numeric(df[cap_col], errors='coerce') == float(cap)]
+                    if not exact.empty:
+                        chosen = exact.iloc[0].to_dict()
+                    else:
+                        nearest = find_nearest_row(df, cap, cap_col)
+                        chosen = nearest.to_dict() if nearest is not None else {}
+                    chosen['_instance'] = idx + 1
+                    rows.append(chosen)
+                total_cap = sum(pd.to_numeric([r.get(cap_col, 0) for r in rows], errors='coerce'))
+                enriched.append({'combo': combo, 'rows': rows, 'total_cap': total_cap, 'units': len(rows)})
+            st.session_state['enriched'] = enriched
 else:
-    st.info("Manual combination mode or no numeric capacity column detected.")
+    man_in = st.text_input(f"Enter {cap_label_type} sizes (use +, e.g. 3.5+3.5+2)", "")
+    if st.button("Create Combo"):
+        if not man_in.strip():
+            st.error("Enter sizes using + (e.g. 3.5+3.5+2)")
+        else:
+            try:
+                sizes = [float(x) for x in man_in.split("+") if x.strip()]
+            except Exception:
+                st.error("Could not parse manual sizes. Use numbers separated by +.")
+                sizes = []
+            if sizes:
+                rows = []
+                for idx, cap in enumerate(sizes):
+                    if cap_col is not None:
+                        exact = df[pd.to_numeric(df[cap_col], errors='coerce') == float(cap)]
+                        if not exact.empty:
+                            chosen = exact.iloc[0].to_dict()
+                        else:
+                            nearest_row = find_nearest_row(df, cap, cap_col)
+                            chosen = nearest_row.to_dict() if nearest_row is not None else {'_cap_input': cap}
+                    else:
+                        chosen = {'_cap_input': cap}
+                    chosen['_instance'] = idx + 1
+                    rows.append(chosen)
+                combo_dict = {}
+                for s in sizes:
+                    key = int(s) if float(s).is_integer() else s
+                    combo_dict[key] = combo_dict.get(key, 0) + 1
+                st.session_state['enriched'] = [{'combo': combo_dict, 'rows': rows, 'total_cap': sum(sizes), 'units': len(rows)}]
 
 # ================ SHOW & EXPORT ================
 if 'enriched' in st.session_state:
@@ -231,7 +306,8 @@ if 'enriched' in st.session_state:
         sel_row = r.copy()
         if 'model' in df.columns and cap_col in r and pd.notna(r.get(cap_col, None)):
             model_list = df[pd.to_numeric(df[cap_col], errors='coerce') == float(r[cap_col])]['model'].dropna().unique().tolist()
-            if not model_list: model_list = df['model'].dropna().unique().tolist()
+            if not model_list:
+                model_list = df['model'].dropna().unique().tolist()
             model_list = sorted(model_list)
             sel = st.selectbox(f"Instance {inst}", model_list, key=f"ov_{inst}")
             matches = df[df['model'] == sel]
@@ -248,7 +324,7 @@ if 'enriched' in st.session_state:
 
     # metadata
     client = st.text_input("Client Name", "Client")
-    manuf = st.text_input("Manufacturer", brand)
+    manuf = st.text_input("Manufacturer", wizard['brand'])
     billing = st.text_input("Billing/Sales", "")
     rdate = st.date_input("Report Date", datetime.now().date())
     out_df['Client'] = client
@@ -261,18 +337,30 @@ if 'enriched' in st.session_state:
 
     meta_cols = ['Client', 'Manufacturer', 'BillingSales', 'ReportDate', 'SelectedCombo', f'ComboTotal{cap_label_type}', 'ComboUnits']
     extra_cols = [c for c in df.columns if c in out_df.columns and c not in meta_cols]
-    final_cols = meta_cols + extra_cols if extra_cols else meta_cols
-    out_df = out_df[final_cols]
+    if extra_cols:
+        final_cols = meta_cols + extra_cols
+        out_df = out_df[final_cols]
+    else:
+        for c in meta_cols:
+            if c not in out_df.columns:
+                out_df[c] = ""
+        out_df = out_df[meta_cols + [c for c in out_df.columns if c not in meta_cols]]
 
     st.subheader("TDS Preview with Ratings")
     num_cols = list(out_df.select_dtypes(include=['number']).columns)
     def style_func(x):
         if isinstance(x, (int, float)):
-            if x >= 90: return 'background-color: #1e824c; color:white'
-            elif x >= 70: return 'background-color: #f39c12; color:white'
-            else: return 'background-color: #c0392b; color:white'
+            if x >= 90:
+                return 'background-color: #1e824c; color:white'
+            elif x >= 70:
+                return 'background-color: #f39c12; color:white'
+            else:
+                return 'background-color: #c0392b; color:white'
         return ''
-    st.dataframe(out_df.style.applymap(style_func, subset=num_cols) if num_cols else out_df)
+    if num_cols:
+        st.dataframe(out_df.style.applymap(style_func, subset=num_cols))
+    else:
+        st.dataframe(out_df)
 
     if st.button("Download Excel"):
         bytes_xl = export_excel(out_df)
